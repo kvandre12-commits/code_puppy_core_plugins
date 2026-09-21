@@ -34,3 +34,19 @@ MIN_DRAWER_CHARS = int(os.environ.get("PUPPY_KENNEL_MIN_DRAWER_CHARS", "80"))
 # Cap on stored drawer text length (chars). Keeps SQLite happy and FTS indexes
 # from getting comically large. Truncation is fine — verbatim within reason.
 MAX_DRAWER_CHARS = int(os.environ.get("PUPPY_KENNEL_MAX_DRAWER_CHARS", "32000"))
+
+# --- Project Doctrine Capsule (guaranteed, repo-scoped tier) --------------
+# A single designated capsule per repo wing, stored in this room. It is packed
+# BEFORE ordinary P1 notes with its own bounded budget, so newest-first P1
+# writes can never displace or truncate the repo's doctrine. The capsule budget
+# is carved out of the P2 (recent-context) remainder; the global P0 user-prefs
+# budget and the P1 sticky-note budget are preserved unchanged.
+CAPSULE_ROOM = os.environ.get("PUPPY_KENNEL_CAPSULE_ROOM", "capsule")
+CAPSULE_BUDGET_TOKENS = int(os.environ.get("PUPPY_KENNEL_CAPSULE_BUDGET", "500"))
+CAPSULE_BUDGET_CHARS = CAPSULE_BUDGET_TOKENS * CHARS_PER_TOKEN
+
+# Upper bound on the rendered wing path shown in the recall-block header. The
+# wing path is the one piece of framing whose length is unbounded (a deeply
+# nested repo path), so it is deterministically abbreviated to this many chars
+# for DISPLAY only. The full wing string is always used for storage/retrieval.
+MAX_WING_DISPLAY_CHARS = int(os.environ.get("PUPPY_KENNEL_MAX_WING_DISPLAY", "80"))

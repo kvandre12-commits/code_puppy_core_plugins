@@ -212,7 +212,75 @@ def test_p0_preserved_capsule_first_and_deduped(kroot, tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 6. Retrieval helper: newest capsule is authoritative
+# 6. Hard ceiling: fully serialized block never exceeds the total char budget
+# --------------------------------------------------------------------------- #
+def test_serialized_block_never_exceeds_total_budget(kroot, tmp_path: Path) -> None:
+    config = kroot['config']
+    kennel = kroot['kennel']
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+    from code_puppy_core_plugins.puppy_kennel.wings import USER_WING
+
+    # Deliberately long, deeply-nested repo path -> a long wing header line,
+    # maximizing framing overhead alongside maximally filled tiers.
+    long_name = 'repo_' + ('d' * 40)
+    main = _make_repo(tmp_path / 'deep' / ('n' * 30) / ('m' * 30), long_name)
+    wing = wings.repo_wing(main)
+
+    # Capsule larger than its budget -> forces capsule-tier truncation too.
+    kennel.write_capsule(wing, CAPSULE_MARKER + ' ' + ('z' * 6000) + CAPSULE_TAIL)
+    # Saturate P0, P1, P2 well beyond their budgets.
+    for i in range(60):
+        kennel.write_note(USER_WING, 'notes', f'pref {i} ' + ('p' * 200), role='note')
+    for i in range(60):
+        kennel.write_note(wing, 'notes', f'note {i} ' + ('q' * 200), role='note')
+    for i in range(60):
+        kennel.write_note(wing, 'sess', f'turn {i} ' + ('a' * 200), role='assistant')
+
+    block1 = packer.pack(cwd_override=str(main)) or ''
+    block2 = packer.pack(cwd_override=str(main)) or ''
+
+    # Hard ceiling on the ENTIRE serialized block (headings, separators,
+    # truncation markers, capsule framing all included).
+    assert len(block1) <= config.PROMPT_BUDGET_CHARS, (
+        f'block {len(block1)} > ceiling {config.PROMPT_BUDGET_CHARS}'
+    )
+    assert block1 == block2, 'ceiling enforcement must be deterministic'
+    # Guarantees preserved even under maximum pressure: capsule + P0 + P1 stay.
+    assert '### Project Doctrine Capsule' in block1
+    assert CAPSULE_MARKER in block1
+    assert '### User Preferences' in block1
+    assert '### Project Decisions' in block1
+
+
+def test_ceiling_holds_across_capsule_budget_sizes(kroot, tmp_path: Path, monkeypatch) -> None:
+    """The ceiling must hold regardless of the (bounded) capsule budget."""
+    config = kroot['config']
+    kennel = kroot['kennel']
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+    from code_puppy_core_plugins.puppy_kennel.wings import USER_WING
+
+    main = _make_repo(tmp_path / 'repos', 'projF')
+    wing = wings.repo_wing(main)
+    kennel.write_capsule(wing, CAPSULE_MARKER + ' ' + ('z' * 5000) + CAPSULE_TAIL)
+    for i in range(60):
+        kennel.write_note(USER_WING, 'notes', f'pref {i} ' + ('p' * 200), role='note')
+    for i in range(60):
+        kennel.write_note(wing, 'notes', f'note {i} ' + ('q' * 200), role='note')
+    for i in range(60):
+        kennel.write_note(wing, 'sess', f'turn {i} ' + ('a' * 200), role='assistant')
+
+    for cap_budget in (200, 800, 2000, 4000):
+        monkeypatch.setattr(packer, 'CAPSULE_BUDGET_CHARS', cap_budget, raising=True)
+        block = packer.pack(cwd_override=str(main)) or ''
+        assert len(block) <= config.PROMPT_BUDGET_CHARS, (
+            f'cap_budget={cap_budget}: block {len(block)} > {config.PROMPT_BUDGET_CHARS}'
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 7. Retrieval helper: newest capsule is authoritative
 # --------------------------------------------------------------------------- #
 def test_capsule_drawer_returns_written(kroot, tmp_path: Path) -> None:
     kennel = kroot["kennel"]

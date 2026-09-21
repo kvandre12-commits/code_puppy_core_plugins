@@ -150,7 +150,35 @@ def pack(cwd_override: str | None = None) -> str | None:
     if not sections:
         return None
 
-    return _render(sections, repo_w)
+    return _enforce_total_ceiling(sections, repo_w, p2)
+
+
+def _enforce_total_ceiling(
+    sections: list[PackSection], repo_w: str, flex: PackSection
+) -> str:
+    """Guarantee the fully serialized block never exceeds ``PROMPT_BUDGET_CHARS``.
+
+    The per-tier budgets bound *content*, but the wing header, tier headings,
+    blank separators and truncation markers add framing the content math does
+    not see (a long ``repo:<path>`` wing line alone can be 100+ chars). To keep
+    a deterministic hard ceiling on the FULL serialized block while preserving
+    the capsule, P0 and P1 tiers and their allocations, we shed trailing lines
+    from the flex tier (P2 / Recent Context) — the lowest-priority content —
+    one at a time until the rendered block fits. A final hard slice is a
+    last-resort backstop for pathological framing.
+    """
+    block = _render([s for s in sections if s.lines], repo_w)
+    if len(block) <= PROMPT_BUDGET_CHARS:
+        return block
+    while flex.lines:
+        flex.lines.pop()
+        block = _render([s for s in sections if s.lines], repo_w)
+        if len(block) <= PROMPT_BUDGET_CHARS:
+            return block
+    block = _render([s for s in sections if s.lines], repo_w)
+    if len(block) > PROMPT_BUDGET_CHARS:
+        block = block[:PROMPT_BUDGET_CHARS]
+    return block
 
 
 def _render(sections: list[PackSection], repo_w: str) -> str:

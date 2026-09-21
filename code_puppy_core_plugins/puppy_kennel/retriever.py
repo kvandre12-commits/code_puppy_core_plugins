@@ -23,6 +23,17 @@ def build_recall_block() -> str | None:
         return _EMPTY_RETURN
     try:
         return packer.pack()
+    except packer.KennelBudgetError as exc:
+        # A misconfigured budget must be LOUD, not silently truncated. Surface a
+        # clear warning to the operator, but still never break the host: emit no
+        # recall block this turn rather than shipping sliced doctrine.
+        try:
+            from code_puppy.messaging.bus import emit_warning
+
+            emit_warning(f"[puppy_kennel] recall block skipped: {exc}")
+        except Exception:
+            pass
+        return _EMPTY_RETURN
     except Exception:
         # Storage isn't ready yet, or the kennel is unhappy. Stay quiet.
         return _EMPTY_RETURN

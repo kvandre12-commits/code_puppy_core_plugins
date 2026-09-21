@@ -44,3 +44,9 @@ MAX_DRAWER_CHARS = int(os.environ.get("PUPPY_KENNEL_MAX_DRAWER_CHARS", "32000"))
 CAPSULE_ROOM = os.environ.get("PUPPY_KENNEL_CAPSULE_ROOM", "capsule")
 CAPSULE_BUDGET_TOKENS = int(os.environ.get("PUPPY_KENNEL_CAPSULE_BUDGET", "500"))
 CAPSULE_BUDGET_CHARS = CAPSULE_BUDGET_TOKENS * CHARS_PER_TOKEN
+
+# Upper bound on the rendered wing path shown in the recall-block header. The
+# wing path is the one piece of framing whose length is unbounded (a deeply
+# nested repo path), so it is deterministically abbreviated to this many chars
+# for DISPLAY only. The full wing string is always used for storage/retrieval.
+MAX_WING_DISPLAY_CHARS = int(os.environ.get("PUPPY_KENNEL_MAX_WING_DISPLAY", "80"))

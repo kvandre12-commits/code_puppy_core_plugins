@@ -253,8 +253,8 @@ def test_serialized_block_never_exceeds_total_budget(kroot, tmp_path: Path) -> N
     assert '### Project Decisions' in block1
 
 
-def test_ceiling_holds_across_capsule_budget_sizes(kroot, tmp_path: Path, monkeypatch) -> None:
-    """The ceiling must hold regardless of the (bounded) capsule budget."""
+def test_ceiling_holds_across_valid_capsule_budgets(kroot, tmp_path: Path, monkeypatch) -> None:
+    """The ceiling must hold for every VALID (bounded) capsule budget."""
     config = kroot['config']
     kennel = kroot['kennel']
     packer = kroot['packer']
@@ -271,7 +271,7 @@ def test_ceiling_holds_across_capsule_budget_sizes(kroot, tmp_path: Path, monkey
     for i in range(60):
         kennel.write_note(wing, 'sess', f'turn {i} ' + ('a' * 200), role='assistant')
 
-    for cap_budget in (200, 800, 2000, 4000):
+    for cap_budget in (200, 800, 2000):  # all valid: cap+P0+P1+framing <= ceiling
         monkeypatch.setattr(packer, 'CAPSULE_BUDGET_CHARS', cap_budget, raising=True)
         block = packer.pack(cwd_override=str(main)) or ''
         assert len(block) <= config.PROMPT_BUDGET_CHARS, (
@@ -280,7 +280,158 @@ def test_ceiling_holds_across_capsule_budget_sizes(kroot, tmp_path: Path, monkey
 
 
 # --------------------------------------------------------------------------- #
-# 7. Retrieval helper: newest capsule is authoritative
+# 7. Extreme wing path is bounded/abbreviated (framing stays bounded)
+# --------------------------------------------------------------------------- #
+def test_extreme_wing_path_abbreviated(kroot, tmp_path: Path) -> None:
+    config = kroot['config']
+    kennel = kroot['kennel']
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+
+    # Build a repo at an absurdly long, deeply-nested path.
+    deep = tmp_path
+    for seg in range(8):
+        deep = deep / (f'segment_{seg}_' + ('x' * 25))
+    main = _make_repo(deep, 'repo_' + ('y' * 40))
+    wing = wings.repo_wing(main)
+    assert len(wing) > config.MAX_WING_DISPLAY_CHARS  # precondition: needs abbreviating
+
+    kennel.write_capsule(wing, CAPSULE_TEXT)
+    block = packer.pack(cwd_override=str(main)) or ''
+
+    # Displayed wing (between backticks on the header line) is bounded.
+    wing_line = next(ln for ln in block.splitlines() if ln.startswith('_Repo wing:'))
+    shown = wing_line.split('`')[1]
+    assert len(shown) <= config.MAX_WING_DISPLAY_CHARS
+    assert '...' in shown  # was abbreviated
+    # Block within ceiling despite the pathological path.
+    assert len(block) <= config.PROMPT_BUDGET_CHARS
+    # Full wing still used for retrieval -> capsule loads regardless of display.
+    assert CAPSULE_MARKER in block
+    assert kennel.capsule_drawer(wing) is not None
+
+
+# --------------------------------------------------------------------------- #
+# 8. P2 exhaustion never alters capsule/P0/P1 bytes; output stays structural
+# --------------------------------------------------------------------------- #
+def _protected_prefix(block: str) -> str:
+    """Everything before the Recent Context (P2) section — the protected part."""
+    marker = '### Recent Context'
+    return block.split(marker)[0]
+
+
+def test_p2_exhaustion_preserves_protected_bytes(kroot, tmp_path: Path) -> None:
+    config = kroot['config']
+    kennel = kroot['kennel']
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+    from code_puppy_core_plugins.puppy_kennel.wings import USER_WING
+
+    main = _make_repo(tmp_path / 'repos', 'projG')
+    wing = wings.repo_wing(main)
+
+    # Byte-complete protected content (each item well under its tier budget).
+    cap = CAPSULE_MARKER + ' distilled doctrine kept whole. ' + CAPSULE_TAIL
+    kennel.write_capsule(wing, cap)
+    prefs = [f'PREF-{i}-SENTINEL ' + ('p' * 90) for i in range(3)]
+    notes = [f'NOTE-{i}-SENTINEL ' + ('q' * 90) for i in range(3)]
+    for p in prefs:
+        kennel.write_note(USER_WING, 'notes', p, role='note')
+    for n in notes:
+        kennel.write_note(wing, 'notes', n, role='note')
+
+    # Baseline: NO P2 content at all.
+    baseline = packer.pack(cwd_override=str(main)) or ''
+    base_protected = _protected_prefix(baseline)
+
+    # Now flood P2 with huge assistant turns to force shedding under the ceiling.
+    for i in range(80):
+        kennel.write_note(wing, 'sess', f'turn {i} ' + ('a' * 300), role='assistant')
+    pressured = packer.pack(cwd_override=str(main)) or ''
+
+    # Ceiling respected.
+    assert len(pressured) <= config.PROMPT_BUDGET_CHARS
+    # Protected prefix is byte-identical to the no-P2 baseline (ignoring only
+    # the trailing section separator): shedding P2 NEVER altered capsule/P0/P1
+    # bytes.
+    assert _protected_prefix(pressured).rstrip() == base_protected.rstrip()
+    # And every protected item is present verbatim (byte-complete, no '...').
+    assert cap in pressured
+    for p in prefs:
+        assert p in pressured
+    for n in notes:
+        assert n in pressured
+
+
+def test_output_structurally_complete_under_pressure(kroot, tmp_path: Path) -> None:
+    config = kroot['config']
+    kennel = kroot['kennel']
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+    from code_puppy_core_plugins.puppy_kennel.wings import USER_WING
+
+    main = _make_repo(tmp_path / 'repos', 'projH')
+    wing = wings.repo_wing(main)
+    kennel.write_capsule(wing, CAPSULE_TEXT)
+    for i in range(60):
+        kennel.write_note(USER_WING, 'notes', f'pref {i} ' + ('p' * 160), role='note')
+    for i in range(60):
+        kennel.write_note(wing, 'notes', f'note {i} ' + ('q' * 160), role='note')
+    for i in range(60):
+        kennel.write_note(wing, 'sess', f'turn {i} ' + ('a' * 200), role='assistant')
+
+    block = packer.pack(cwd_override=str(main)) or ''
+    lines = block.splitlines()
+    assert lines[0] == '## Puppy Kennel - Memory'
+    assert block.endswith('\n')  # clean terminal newline, not a mid-line slice
+    # No dangling heading: every '### ' section is followed by >=1 content bullet.
+    for idx, ln in enumerate(lines):
+        if ln.startswith('### '):
+            assert idx + 1 < len(lines) and lines[idx + 1].startswith('- ['), (
+                f'section {ln!r} has no content line'
+            )
+
+
+# --------------------------------------------------------------------------- #
+# 9. Impossible budget configs fail explicitly (never silently slice)
+# --------------------------------------------------------------------------- #
+def test_impossible_capsule_budget_raises(kroot, tmp_path: Path, monkeypatch) -> None:
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+
+    main = _make_repo(tmp_path / 'repos', 'projI')
+    wing = wings.repo_wing(main)
+    kennel = kroot['kennel']
+    kennel.write_capsule(wing, CAPSULE_TEXT)
+
+    # Capsule budget so large that capsule+P0+P1+framing cannot fit the ceiling.
+    monkeypatch.setattr(packer, 'CAPSULE_BUDGET_CHARS', 10_000, raising=True)
+    with pytest.raises(packer.KennelBudgetError):
+        packer.pack(cwd_override=str(main))
+
+
+def test_impossible_total_budget_raises(kroot, tmp_path: Path, monkeypatch) -> None:
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import wings
+
+    main = _make_repo(tmp_path / 'repos', 'projJ')
+    monkeypatch.setattr(packer, 'PROMPT_BUDGET_CHARS', 120, raising=True)
+    with pytest.raises(packer.KennelBudgetError):
+        packer.pack(cwd_override=str(main))
+
+
+def test_retriever_swallows_budget_error_returns_none(kroot, tmp_path, monkeypatch) -> None:
+    """Impossible config must not crash the host: retriever emits no block."""
+    packer = kroot['packer']
+    from code_puppy_core_plugins.puppy_kennel import retriever
+
+    monkeypatch.setattr(packer, 'CAPSULE_BUDGET_CHARS', 10_000, raising=True)
+    # is_enabled() is True (fixture); pack() raises -> retriever returns None.
+    assert retriever.build_recall_block() is None
+
+
+# --------------------------------------------------------------------------- #
+# 10. Retrieval helper: newest capsule is authoritative
 # --------------------------------------------------------------------------- #
 def test_capsule_drawer_returns_written(kroot, tmp_path: Path) -> None:
     kennel = kroot["kennel"]

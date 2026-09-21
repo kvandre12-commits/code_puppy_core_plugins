@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 from . import kennel
 from .config import (
+    CAPSULE_BUDGET_CHARS,
+    CAPSULE_ROOM,
     CHARS_PER_TOKEN,
     MIN_DRAWER_CHARS,
     PROMPT_BUDGET_CHARS,
@@ -109,6 +111,18 @@ def pack(cwd_override: str | None = None) -> str | None:
     repo_w = repo_wing(cwd)
 
     total_budget = max(0, PROMPT_BUDGET_CHARS - _HEADER_SLACK_CHARS)
+
+    # Capsule tier (guaranteed, repo-scoped): pack the single designated
+    # capsule FIRST, within its own bounded budget, so newest-first P1 notes
+    # can never displace or truncate it. Its cost is charged to the P2
+    # remainder below; P0 and P1 budgets are preserved exactly.
+    capsule_budget = min(CAPSULE_BUDGET_CHARS, total_budget)
+    capsule = kennel.capsule_drawer(repo_w) if capsule_budget > 0 else None
+    cap_section: PackSection | None = None
+    if capsule is not None:
+        cap_section = _pack_class([capsule], capsule_budget, min_chars=0)
+        cap_section.title = "Project Doctrine Capsule"
+
     p0_budget = int(total_budget * USER_PREFS_QUOTA)
     p1_budget = int(total_budget * STICKY_QUOTA)
 
@@ -117,18 +131,22 @@ def pack(cwd_override: str | None = None) -> str | None:
     p0 = _pack_class(user_drawers, p0_budget)
     p0.title = "User Preferences"
 
-    # P1: repo sticky notes (role='note' only).
-    sticky = kennel.recent_drawers(repo_w, limit=_FETCH_LIMIT, role="note")
+    # P1: repo sticky notes (role='note' only), excluding the capsule room so
+    # the designated capsule never renders twice.
+    sticky = kennel.recent_drawers(
+        repo_w, limit=_FETCH_LIMIT, role="note", exclude_room=CAPSULE_ROOM
+    )
     p1 = _pack_class(sticky, p1_budget)
     p1.title = "Project Decisions"
 
-    # P2: recent assistant responses fill the remainder.
-    p2_budget = total_budget - p0.used_chars - p1.used_chars
+    # P2: recent assistant responses fill whatever remains after capsule+P0+P1.
+    cap_used = cap_section.used_chars if cap_section else 0
+    p2_budget = total_budget - cap_used - p0.used_chars - p1.used_chars
     assistant = kennel.recent_drawers(repo_w, limit=_FETCH_LIMIT, role="assistant")
     p2 = _pack_class(assistant, max(0, p2_budget))
     p2.title = "Recent Context"
 
-    sections = [s for s in (p0, p1, p2) if s.lines]
+    sections = [s for s in (cap_section, p0, p1, p2) if s and s.lines]
     if not sections:
         return None
 

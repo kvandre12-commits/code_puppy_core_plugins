@@ -148,13 +148,18 @@ def _row_to_drawer(row: sqlite3.Row) -> Drawer:
 
 
 def recent_drawers(
-    wing_name: str, limit: int = 5, role: str | None = None
+    wing_name: str,
+    limit: int = 5,
+    role: str | None = None,
+    exclude_room: str | None = None,
 ) -> list[Drawer]:
     """Return the most recent drawers in a wing, optionally role-filtered.
 
     ``role=None`` returns every role (assistant + note + ...). Pass a
     specific value like ``"note"`` to get just sticky writes from
-    ``kennel_remember``.
+    ``kennel_remember``. ``exclude_room`` drops any drawer whose room name
+    matches — used by the packer to keep the designated capsule room out of
+    ordinary P1 note output so the capsule never double-renders.
     """
     sql_parts = [
         "SELECT d.* FROM drawers d",
@@ -166,11 +171,63 @@ def recent_drawers(
     if role is not None:
         sql_parts.append("AND d.role = ?")
         params.append(role)
+    if exclude_room is not None:
+        sql_parts.append("AND r.name != ?")
+        params.append(exclude_room)
     sql_parts.append("ORDER BY d.ts DESC LIMIT ?")
     params.append(limit)
     with _connect() as conn:
         rows = conn.execute(" ".join(sql_parts), params).fetchall()
     return [_row_to_drawer(r) for r in rows]
+
+
+def capsule_drawer(wing_name: str, room_name: str | None = None) -> Drawer | None:
+    """Return THE designated capsule for a wing: newest drawer in its capsule
+    room, or ``None`` if the wing has no capsule.
+
+    Scoped strictly to ``wing_name`` (an exact ``repo:<git-root>`` string from
+    ``wings.repo_wing``), so a capsule can never leak across repositories.
+    """
+    from .config import CAPSULE_ROOM
+
+    room = room_name or CAPSULE_ROOM
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT d.* FROM drawers d "
+            "JOIN rooms r ON r.id = d.room_id "
+            "JOIN wings w ON w.id = r.wing_id "
+            "WHERE w.name = ? AND r.name = ? "
+            "ORDER BY d.ts DESC LIMIT 1",
+            (wing_name, room),
+        ).fetchone()
+    return _row_to_drawer(row) if row else None
+
+
+def write_capsule(
+    wing_name: str,
+    content: str,
+    session_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    """Append the designated Project Doctrine Capsule for a wing.
+
+    Writes into the capsule room; ``capsule_drawer`` always reads the newest,
+    so the most recent write is authoritative ("exactly one designated
+    capsule") without deleting history. Returns the new drawer id.
+    """
+    from .config import CAPSULE_ROOM
+
+    meta = {"kind": "project_doctrine_capsule"}
+    if metadata:
+        meta.update(metadata)
+    return write_note(
+        wing_name=wing_name,
+        room_name=CAPSULE_ROOM,
+        content=content,
+        role="note",
+        session_id=session_id,
+        metadata=meta,
+    )
 
 
 def recent_drawers_multi(
